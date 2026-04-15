@@ -118,10 +118,10 @@ public:
   int task1_grasp_settle_ms_ = 180;
   /** Stop a few mm above the nominal contact plane before closing to avoid pressing parts into tiles. */
   double task1_grasp_backoff_z_ = 0.012;
-  double task1_place_offset_z_ = 0.11;
-  double task1_release_min_extra_z_ = 0.02;
-  double task1_release_max_extra_z_ = 0.06;
-  double task1_release_object_height_scale_ = 0.45;
+  double task1_place_offset_z_ = 0.14;
+  double task1_release_min_extra_z_ = 0.03;
+  double task1_release_max_extra_z_ = 0.08;
+  double task1_release_object_height_scale_ = 0.50;
   /** After lift, require EE z >= goal.z + this before moving over basket (panda_link0, metres). */
   double task1_basket_approach_min_z_ = 0.30;
   /** Also require EE z >= lift_z + this during transit. */
@@ -130,12 +130,12 @@ public:
   double task1_transit_xy_vel_scale_ = 0.12;
   double task1_transit_xy_acc_scale_ = 0.18;
   /** Final vertical lower to release: velocity scale. */
-  double task1_place_descend_vel_scale_ = 0.14;
-  double task1_place_descend_acc_scale_ = 0.20;
+  double task1_place_descend_vel_scale_ = 0.06;
+  double task1_place_descend_acc_scale_ = 0.10;
   /** For top-down RPY(0,π,yaw8), hand finger-closing axis in XY is yaw8 + 3π/4. */
   double task1_ee_yaw_offset_rad_ = -2.356194490192345;
   /** If closing is blocked by the object, allow this extra achieved width over target and still count as grasp. */
-  double task1_blocked_close_width_tolerance_ = 0.018;
+  double task1_blocked_close_width_tolerance_ = 0.040;
 
 private:
   void setup_arm_hand(

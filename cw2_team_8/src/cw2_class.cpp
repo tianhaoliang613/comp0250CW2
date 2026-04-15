@@ -742,23 +742,34 @@ double cw2::current_gripper_width() const
 bool cw2::close_gripper_for_grasp(double target_width_m) const
 {
   const double target = std::clamp(target_width_m, 0.0, task1_gripper_open_width_);
-  if (set_gripper(target)) {
-    return true;
-  }
 
-  // In Gazebo the hand action often aborts when the fingers are blocked by the object.
-  // Treat that as a successful grasp if the hand actually closed enough to indicate contact.
-  std::this_thread::sleep_for(std::chrono::milliseconds(80));
-  const double achieved = current_gripper_width();
-  const bool blocked_with_contact =
-    achieved <= std::min(task1_gripper_open_width_ - 0.006, target + task1_blocked_close_width_tolerance_);
-  if (task1_debug_verbose_) {
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "[T1DBG] close_gripper_for_grasp target=%.4f achieved=%.4f blocked_contact=%d",
-      target, achieved, blocked_with_contact ? 1 : 0);
+  // Try closing at progressively wider targets so the planner can find a feasible plan
+  // even when fingers are partially blocked by the grasped object.
+  constexpr int kMaxRetries = 3;
+  constexpr double kRetryWidthStep = 0.004;
+  for (int r = 0; r < kMaxRetries; ++r) {
+    const double try_w = std::clamp(target + r * kRetryWidthStep, 0.0, task1_gripper_open_width_);
+    if (set_gripper(try_w)) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const double achieved = current_gripper_width();
+    const bool blocked_with_contact =
+      achieved <= std::min(task1_gripper_open_width_ - 0.004, target + task1_blocked_close_width_tolerance_);
+    if (blocked_with_contact) {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "Task1: gripper blocked by object (achieved=%.4f target=%.4f) — treating as grasp", achieved, target);
+      return true;
+    }
+    if (task1_debug_verbose_) {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "[T1DBG] close_gripper retry %d/%d target=%.4f try_w=%.4f achieved=%.4f blocked=%d",
+        r + 1, kMaxRetries, target, try_w, achieved, blocked_with_contact ? 1 : 0);
+    }
   }
-  return blocked_with_contact;
+  return false;
 }
 
 void cw2::task1_debug_roi_stats(const PointC &roi, const geometry_msgs::msg::Point &obj) const
@@ -1108,19 +1119,20 @@ void cw2::t1_callback(
     }
   }
 
-  // Grasp point is offset from object centroid. Compensate so the OBJECT centre
-  // (not the grasp point) lands at the basket centre.
-  const double grip_dx = last_grasp_cx - obj_l0.point.x;
-  const double grip_dy = last_grasp_cy - obj_l0.point.y;
-  const double place_x = goal_l0.point.x - grip_dx;
-  const double place_y = goal_l0.point.y - grip_dy;
-
   const geometry_msgs::msg::Pose hover_above_basket =
-    make_topdown_pose(place_x, place_y, safe_approach_z, yaw_place);
+    make_topdown_pose(goal_l0.point.x, goal_l0.point.y, safe_approach_z, yaw_place);
+  // Break long transit into intermediate waypoints so Cartesian planner can handle it.
   std::vector<geometry_msgs::msg::Pose> to_basket;
-  to_basket.push_back(hover_above_basket);
+  constexpr int kTransitSteps = 5;
+  for (int s = 1; s <= kTransitSteps; ++s) {
+    const double t = static_cast<double>(s) / kTransitSteps;
+    to_basket.push_back(make_topdown_pose(
+      last_grasp_cx + t * (goal_l0.point.x - last_grasp_cx),
+      last_grasp_cy + t * (goal_l0.point.y - last_grasp_cy),
+      safe_approach_z, yaw_place));
+  }
   if (!cartesian_follow_waypoints(
-      to_basket, 0.55, task1_transit_xy_vel_scale_, task1_transit_xy_acc_scale_, 0.002))
+      to_basket, 0.85, task1_transit_xy_vel_scale_, task1_transit_xy_acc_scale_, 0.003))
   {
     RCLCPP_WARN(
       node_->get_logger(),
@@ -1136,7 +1148,7 @@ void cw2::t1_callback(
   planning_scene_interface_.removeCollisionObjects({ground_id});
 
   const geometry_msgs::msg::Pose at_release =
-    make_topdown_pose(place_x, place_y, release_z, yaw_place);
+    make_topdown_pose(goal_l0.point.x, goal_l0.point.y, release_z, yaw_place);
   std::vector<geometry_msgs::msg::Pose> vertical_place;
   vertical_place.push_back(at_release);
   if (!cartesian_follow_waypoints(
@@ -1153,14 +1165,12 @@ void cw2::t1_callback(
     RCLCPP_WARN(node_->get_logger(), "Task1: open gripper for release failed");
   }
 
-  const geometry_msgs::msg::Pose retreat_pose =
-    make_topdown_pose(place_x, place_y, safe_approach_z, yaw_place);
   std::vector<geometry_msgs::msg::Pose> retreat_up;
-  retreat_up.push_back(retreat_pose);
+  retreat_up.push_back(hover_above_basket);
   if (!cartesian_follow_waypoints(
       retreat_up, 0.55, task1_place_descend_vel_scale_, task1_place_descend_acc_scale_, 0.001))
   {
-    (void)move_arm_to_pose(retreat_pose);
+    (void)move_arm_to_pose(hover_above_basket);
   }
 
   // Ensure collision object is cleaned up even if it was not removed earlier.
