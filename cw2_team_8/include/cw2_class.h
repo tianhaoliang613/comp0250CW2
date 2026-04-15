@@ -48,6 +48,7 @@ class cw2
 public:
   explicit cw2(const rclcpp::Node::SharedPtr &node);
 
+  // ---- Service callbacks ----
   void t1_callback(
     const std::shared_ptr<cw2_world_spawner::srv::Task1Service::Request> request,
     std::shared_ptr<cw2_world_spawner::srv::Task1Service::Response> response);
@@ -60,6 +61,7 @@ public:
 
   void cloud_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg);
 
+  // ---- ROS handles ----
   rclcpp::Node::SharedPtr node_;
   rclcpp::Service<cw2_world_spawner::srv::Task1Service>::SharedPtr t1_service_;
   rclcpp::Service<cw2_world_spawner::srv::Task2Service>::SharedPtr t2_service_;
@@ -86,21 +88,20 @@ public:
   std::string pointcloud_topic_;
   bool pointcloud_qos_reliable_ = false;
 
-  /** When true, Task1 emits extra [T1DBG] diagnostics (default off — normal runs stay quiet). */
-  mutable bool task1_debug_verbose_ = false;
+  // ======================= General tunables =======================
+  double cloud_max_age_sec_ = 0.35;
+  double cloud_wait_timeout_sec_ = 25.0;
+  int spawn_settle_ms_ = 800;
+  double gripper_open_width_ = 0.08;
+  double gripper_max_width_ = 0.08;
+  double gripper_min_width_ = 0.0;
+  double blocked_close_width_tolerance_ = 0.040;
 
-  // --- Task1 tunables (ROS parameters override defaults) ---
-  double task1_cloud_max_age_sec_ = 0.35;
-  double task1_cloud_wait_timeout_sec_ = 25.0;
-  /** Wait after /task1_start before sampling cloud seq (spawn + depth catch-up; fixes repeat-task no-motion). */
-  int task1_spawn_settle_ms_ = 800;
+  // ====================== Task 1 tunables =========================
   double task1_roi_radius_xy_ = 0.14;
   double task1_roi_half_height_ = 0.05;
   double task1_surface_percentile_ = 0.72;
   double task1_ground_reject_height_ = 0.02;
-  double task1_gripper_open_width_ = 0.08;
-  double task1_gripper_max_width_ = 0.08;
-  double task1_gripper_min_width_ = 0.0;
   double task1_gripper_closing_margin_ = 0.018;
   double task1_candidate_strip_half_depth_ = 0.045;
   double task1_contact_side_threshold_ = 0.004;
@@ -110,38 +111,30 @@ public:
   double task1_pregrasp_offset_z_ = 0.18;
   double task1_grasp_offset_z_ = 0.125;
   double task1_lift_offset_z_ = 0.20;
-  double task1_surface_z_percentile_ = 0.88;
-  double task1_tcp_clearance_above_surface_ = 0.135;
   double task1_descend_velocity_scale_ = 0.085;
   double task1_descend_acceleration_scale_ = 0.14;
   double task1_approach_last_delta_z_ = 0.022;
   int task1_grasp_settle_ms_ = 180;
-  /** Stop a few mm above the nominal contact plane before closing to avoid pressing parts into tiles. */
   double task1_grasp_backoff_z_ = 0.012;
   double task1_place_offset_z_ = 0.14;
   double task1_release_min_extra_z_ = 0.03;
   double task1_release_max_extra_z_ = 0.08;
   double task1_release_object_height_scale_ = 0.50;
-  /** After lift, require EE z >= goal.z + this before moving over basket (panda_link0, metres). */
   double task1_basket_approach_min_z_ = 0.30;
-  /** Also require EE z >= lift_z + this during transit. */
   double task1_transit_raise_above_lift_ = 0.12;
-  /** Horizontal leg to basket: velocity / accel scaling (keep moderate). */
   double task1_transit_xy_vel_scale_ = 0.12;
   double task1_transit_xy_acc_scale_ = 0.18;
-  /** Final vertical lower to release: velocity scale. */
   double task1_place_descend_vel_scale_ = 0.06;
   double task1_place_descend_acc_scale_ = 0.10;
-  /** For top-down RPY(0,π,yaw8), hand finger-closing axis in XY is yaw8 + 3π/4. */
   double task1_ee_yaw_offset_rad_ = -2.356194490192345;
-  /** If closing is blocked by the object, allow this extra achieved width over target and still count as grasp. */
-  double task1_blocked_close_width_tolerance_ = 0.040;
 
 private:
+  // ================= Common utilities (reusable) ==================
   void setup_arm_hand(
     moveit::planning_interface::MoveGroupInterface &arm,
     moveit::planning_interface::MoveGroupInterface &hand) const;
 
+  // -- Transform --
   bool transform_point_to_link0(
     const geometry_msgs::msg::PointStamped &in,
     geometry_msgs::msg::PointStamped &out) const;
@@ -152,36 +145,33 @@ private:
     const std::string &target_frame,
     PointC &cloud_out) const;
 
+  // -- Point cloud --
   bool wait_for_cloud(
     std::chrono::milliseconds timeout,
     std::uint64_t min_sequence_exclusive,
     std::uint64_t *latest_sequence) const;
 
-  /** True if a non-empty cloud exists and last receive time is within max_age. */
-  bool task1_cloud_recently_valid(std::chrono::seconds max_age) const;
+  bool cloud_recently_valid(std::chrono::seconds max_age) const;
 
   bool get_cloud_snapshot(PointCPtr &cloud, std::string &frame_id, std::uint64_t &sequence) const;
 
-  void extract_task1_roi_points(
+  /** Extract points within a cylindrical ROI around @p center. */
+  void extract_roi_points(
     const PointC &cloud_in_link0,
-    const geometry_msgs::msg::Point &object_point_link0,
+    const geometry_msgs::msg::Point &center,
+    double radius_xy,
+    double half_height_z,
+    double min_z,
     PointC &roi_out) const;
 
-  void generate_task1_candidates(
-    const PointC &roi,
-    const geometry_msgs::msg::Point &object_point_link0,
-    const std::string &shape_type,
-    std::vector<Task1GraspCandidate> &candidates_out) const;
-
+  // -- Arm movement --
   bool execute_plan(
     moveit::planning_interface::MoveGroupInterface &group,
     const moveit::planning_interface::MoveGroupInterface::Plan &plan) const;
 
   bool move_arm_to_pose(const geometry_msgs::msg::Pose &target_pose) const;
 
-  bool cartesian_move(
-    const geometry_msgs::msg::Pose &target_pose,
-    double min_fraction) const;
+  bool cartesian_move(const geometry_msgs::msg::Pose &target_pose, double min_fraction) const;
 
   bool cartesian_follow_waypoints(
     const std::vector<geometry_msgs::msg::Pose> &waypoints,
@@ -190,17 +180,31 @@ private:
     double acc_scale,
     double eef_step) const;
 
-  static double task1_percentile_z(const PointC &roi, double q01);
-
-  void task1_debug_roi_stats(const PointC &roi, const geometry_msgs::msg::Point &obj) const;
-
+  // -- Gripper --
   bool set_gripper(double width_m) const;
-
   double current_gripper_width() const;
-
+  bool open_gripper() const;
   bool close_gripper_for_grasp(double target_width_m) const;
 
+  // -- Collision scene helpers --
+  void add_collision_box(
+    const std::string &id,
+    double cx, double cy, double cz,
+    double sx, double sy, double sz);
+
+  void add_ground_guard(const std::string &id);
+
+  void remove_collision_objects(const std::vector<std::string> &ids);
+
+  // -- Pose --
   geometry_msgs::msg::Pose make_topdown_pose(double x, double y, double z, double yaw_rad) const;
+
+  // ================= Task 1 specifics =============================
+  void generate_task1_candidates(
+    const PointC &roi,
+    const geometry_msgs::msg::Point &object_point_link0,
+    const std::string &shape_type,
+    std::vector<Task1GraspCandidate> &candidates_out) const;
 
   double task1_arm_link8_yaw(double grasp_model_yaw_rad) const;
 };
